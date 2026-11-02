@@ -1,23 +1,24 @@
-service: trazora-ordenes
+service: trazora-agenda
 
 provider:
   name: aws
   runtime: python3.12
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
+  timeout: 25
   iam:
     role: ${env:LAB_ROLE_ARN}
   environment:
-    ORDENES_TABLE: trazora-ordenes-${sls:stage}
-    CLIENTES_API_BASE: ${env:MS1_CLIENTES_API_BASE}
+    AGENDA_TABLE: trazora-agenda-${sls:stage}
+    ORDENES_API_BASE: ${env:MS3_ORDENES_API_BASE}
+    TECNICOS_API_BASE: ${env:MS2_TECNICOS_API_BASE}
 
 functions:
-  crear:
+  programar:
     handler: handler.crear
-    timeout: 15
     events:
       - http:
-          path: ordenes
+          path: visitas
           method: post
           cors: true
           authorizer: &ms0Auth
@@ -28,32 +29,30 @@ functions:
 
   listar:
     handler: handler.listar
-    timeout: 10
     events:
       - http:
-          path: ordenes
+          path: visitas
           method: get
           cors: true
           authorizer: *ms0Auth
 
   buscar:
     handler: handler.buscar
-    timeout: 10
     events:
       - http:
-          path: ordenes/{orden_id}
+          path: visitas/{visita_id}
           method: get
           cors: true
           authorizer: *ms0Auth
 
 resources:
   Resources:
-    OrdenesTable:
+    AgendaTable:
       Type: AWS::DynamoDB::Table
       DeletionPolicy: Retain
       UpdateReplacePolicy: Retain
       Properties:
-        TableName: ${self:provider.environment.ORDENES_TABLE}
+        TableName: ${self:provider.environment.AGENDA_TABLE}
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
           - AttributeName: PK
@@ -67,5 +66,5 @@ resources:
             KeyType: RANGE
 
   Outputs:
-    OrdenesTableName:
-      Value: !Ref OrdenesTable
+    AgendaTableName:
+      Value: !Ref AgendaTable

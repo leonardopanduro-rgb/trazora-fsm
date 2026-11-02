@@ -73,6 +73,7 @@ def login(event, context):
             "usuario_id": user["usuario_id"],
             "revocada": False,
             "expires_at": expires_at,
+            "credential_version": int(user.get("credential_version", 0)),
         },
         ConditionExpression="attribute_not_exists(token_hash)",
     )
@@ -100,6 +101,8 @@ def authorizer(event, context):
         raise Exception("Unauthorized")
     user = _usuario(tenant, usuario_id)
     if not user or user.get("estado") != "ACTIVO" or user.get("rol") not in ("ADMIN", "COORDINADOR", "TECNICO"):
+        raise Exception("Unauthorized")
+    if int(session.get("credential_version", 0)) != int(user.get("credential_version", 0)):
         raise Exception("Unauthorized")
     return {
         "principalId": usuario_id,

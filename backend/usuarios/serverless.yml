@@ -10,6 +10,7 @@ provider:
   environment:
     USUARIOS_TABLE: trazora-usuarios-${sls:stage}
     SESIONES_TABLE: trazora-sesiones-${sls:stage}
+    ALLOWED_TENANTS: CLIMALIMA,FRIOSUR,TECNINORTE
 
 functions:
   health:
@@ -20,7 +21,44 @@ functions:
           method: get
           cors: true
 
-# Tablas privadas de MS0. No implementan login por sí solas.
+  login:
+    handler: handler.login
+    timeout: 10
+    events:
+      - http:
+          path: auth/login
+          method: post
+          cors: true
+
+  validarToken:
+    handler: handler.authorizer
+
+  me:
+    handler: handler.me
+    events:
+      - http:
+          path: usuarios/me
+          method: get
+          cors: true
+          authorizer:
+            name: validarToken
+            type: token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 0
+
+  logout:
+    handler: handler.logout
+    events:
+      - http:
+          path: auth/logout
+          method: post
+          cors: true
+          authorizer:
+            name: validarToken
+            type: token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 0
+
 resources:
   Resources:
     UsuariosTable:

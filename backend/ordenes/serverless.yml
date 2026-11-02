@@ -1,0 +1,71 @@
+service: trazora-ordenes
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  iam:
+    role: ${env:LAB_ROLE_ARN}
+  environment:
+    ORDENES_TABLE: trazora-ordenes-${sls:stage}
+    CLIENTES_API_BASE: ${env:MS1_CLIENTES_API_BASE}
+
+functions:
+  crear:
+    handler: handler.crear
+    timeout: 15
+    events:
+      - http:
+          path: ordenes
+          method: post
+          cors: true
+          authorizer: &ms0Auth
+            arn: ${env:MS0_AUTHORIZER_ARN}
+            type: token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 0
+
+  listar:
+    handler: handler.listar
+    timeout: 10
+    events:
+      - http:
+          path: ordenes
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
+  buscar:
+    handler: handler.buscar
+    timeout: 10
+    events:
+      - http:
+          path: ordenes/{orden_id}
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
+resources:
+  Resources:
+    OrdenesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.ORDENES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
+            AttributeType: S
+        KeySchema:
+          - AttributeName: PK
+            KeyType: HASH
+          - AttributeName: SK
+            KeyType: RANGE
+
+  Outputs:
+    OrdenesTableName:
+      Value: !Ref OrdenesTable

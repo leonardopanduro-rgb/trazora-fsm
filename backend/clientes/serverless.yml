@@ -1,0 +1,66 @@
+service: trazora-clientes
+
+provider:
+  name: aws
+  runtime: python3.12
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  iam:
+    role: ${env:LAB_ROLE_ARN}
+  environment:
+    CLIENTES_TABLE: trazora-clientes-${sls:stage}
+
+functions:
+  crear:
+    handler: handler.crear
+    events:
+      - http:
+          path: clientes
+          method: post
+          cors: true
+          authorizer: &ms0
+            arn: ${env:MS0_AUTHORIZER_ARN}
+            type: token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 0
+
+  listar:
+    handler: handler.listar
+    events:
+      - http:
+          path: clientes
+          method: get
+          cors: true
+          authorizer: *ms0
+
+  buscar:
+    handler: handler.buscar
+    events:
+      - http:
+          path: clientes/{cliente_id}
+          method: get
+          cors: true
+          authorizer: *ms0
+
+resources:
+  Resources:
+    ClientesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.CLIENTES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
+            AttributeType: S
+        KeySchema:
+          - AttributeName: PK
+            KeyType: HASH
+          - AttributeName: SK
+            KeyType: RANGE
+  Outputs:
+    ClientesTableName:
+      Value: !Ref ClientesTable

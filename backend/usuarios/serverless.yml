@@ -1,0 +1,18 @@
+service: trazora-usuarios
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  iam:
+    role: ${env:LAB_ROLE_ARN}
+
+functions:
+  health:
+    handler: handler.health
+    events:
+      - http:
+          path: health
+          method: get
+          cors: true

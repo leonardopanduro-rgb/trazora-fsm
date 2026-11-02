@@ -7,6 +7,9 @@ provider:
   stage: ${opt:stage, 'dev'}
   iam:
     role: ${env:LAB_ROLE_ARN}
+  environment:
+    USUARIOS_TABLE: trazora-usuarios-${sls:stage}
+    SESIONES_TABLE: trazora-sesiones-${sls:stage}
 
 functions:
   health:
@@ -16,3 +19,49 @@ functions:
           path: health
           method: get
           cors: true
+
+# Tablas privadas de MS0. No implementan login por sí solas.
+resources:
+  Resources:
+    UsuariosTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.USUARIOS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
+            AttributeType: S
+        KeySchema:
+          - AttributeName: PK
+            KeyType: HASH
+          - AttributeName: SK
+            KeyType: RANGE
+
+    SesionesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.SESIONES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: token_hash
+            AttributeType: S
+        KeySchema:
+          - AttributeName: token_hash
+            KeyType: HASH
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
+
+  Outputs:
+    UsuariosTableName:
+      Description: Nombre de la tabla de usuarios MS0
+      Value: !Ref UsuariosTable
+    SesionesTableName:
+      Description: Nombre de la tabla de sesiones MS0
+      Value: !Ref SesionesTable

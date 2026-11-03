@@ -1,0 +1,129 @@
+service: trazora-eventos
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  iam:
+    role: ${env:LAB_ROLE_ARN}
+
+# Stack compartido: infraestructura SNS/SQS, sin Lambdas ni consumidores aún.
+resources:
+  Resources:
+    EventosFSMTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: trazora-fsm-eventos-${sls:stage}
+
+    AgendaDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: trazora-eventos-agenda-dlq-${sls:stage}
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+
+    OrdenesDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: trazora-eventos-ordenes-dlq-${sls:stage}
+        MessageRetentionPeriod: 1209600
+        SqsManagedSseEnabled: true
+
+    AgendaQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: trazora-eventos-agenda-${sls:stage}
+        VisibilityTimeout: 180
+        MessageRetentionPeriod: 345600
+        SqsManagedSseEnabled: true
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt AgendaDLQ.Arn
+          maxReceiveCount: 5
+
+    OrdenesQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: trazora-eventos-ordenes-${sls:stage}
+        VisibilityTimeout: 180
+        MessageRetentionPeriod: 345600
+        SqsManagedSseEnabled: true
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt OrdenesDLQ.Arn
+          maxReceiveCount: 5
+
+    EventoQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref AgendaQueue
+          - !Ref OrdenesQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: AllowSNSFromFSMTopic
+              Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource:
+                - !GetAtt AgendaQueue.Arn
+                - !GetAtt OrdenesQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref EventosFSMTopic
+
+    AgendaSubscription:
+      Type: AWS::SNS::Subscription
+      DependsOn: EventoQueuePolicy
+      Properties:
+        TopicArn: !Ref EventosFSMTopic
+        Protocol: sqs
+        Endpoint: !GetAtt AgendaQueue.Arn
+        RawMessageDelivery: true
+        FilterPolicyScope: MessageBody
+        FilterPolicy:
+          event_type:
+            - ParteFinalizado
+
+    OrdenesSubscription:
+      Type: AWS::SNS::Subscription
+      DependsOn: EventoQueuePolicy
+      Properties:
+        TopicArn: !Ref EventosFSMTopic
+        Protocol: sqs
+        Endpoint: !GetAtt OrdenesQueue.Arn
+        RawMessageDelivery: true
+        FilterPolicyScope: MessageBody
+        FilterPolicy:
+          event_type:
+            - ParteFinalizado
+            - VisitaProgramada
+            - VisitaReprogramada
+            - VisitaIniciada
+            - VisitaCancelada
+            - VisitaCompletada
+
+  Outputs:
+    EventosTopicArn:
+      Description: Topic SNS de eventos de Trazora FSM
+      Value: !Ref EventosFSMTopic
+
+    AgendaQueueUrl:
+      Description: Cola SQS de eventos para Agenda
+      Value: !Ref AgendaQueue
+    AgendaQueueArn:
+      Value: !GetAtt AgendaQueue.Arn
+
+    OrdenesQueueUrl:
+      Description: Cola SQS de eventos para Ordenes
+      Value: !Ref OrdenesQueue
+    OrdenesQueueArn:
+      Value: !GetAtt OrdenesQueue.Arn
+
+    AgendaDlqUrl:
+      Description: Cola de mensajes fallidos de Agenda
+      Value: !Ref AgendaDLQ
+    OrdenesDlqUrl:
+      Description: Cola de mensajes fallidos de Ordenes
+      Value: !Ref OrdenesDLQ

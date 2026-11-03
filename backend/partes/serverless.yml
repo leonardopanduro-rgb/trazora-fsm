@@ -1,0 +1,138 @@
+service: trazora-partes
+
+custom:
+  evidenciasBucket: trazora-fsm-evidencias-${aws:accountId}-${sls:stage}-${aws:region}
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  timeout: 20
+  iam:
+    role: ${env:LAB_ROLE_ARN}
+  environment:
+    PARTES_TABLE: trazora-partes-${sls:stage}
+    EVIDENCIAS_BUCKET: ${self:custom.evidenciasBucket}
+    AGENDA_API_BASE: ${env:MS4_AGENDA_API_BASE}
+
+functions:
+  crearBorrador:
+    handler: handler.crear_borrador
+    events:
+      - http:
+          path: visitas/{visita_id}/partes
+          method: post
+          cors: true
+          authorizer: &ms0Auth
+            arn: ${env:MS0_AUTHORIZER_ARN}
+            type: token
+            identitySource: method.request.header.Authorization
+            resultTtlInSeconds: 0
+
+  buscarPorVisita:
+    handler: handler.buscar_por_visita
+    events:
+      - http:
+          path: visitas/{visita_id}/partes
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
+  consultar:
+    handler: handler.consultar
+    events:
+      - http:
+          path: partes/{parte_id}
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
+  actualizar:
+    handler: handler.actualizar
+    events:
+      - http:
+          path: partes/{parte_id}
+          method: patch
+          cors: true
+          authorizer: *ms0Auth
+
+  pedirCarga:
+    handler: handler.pedir_carga
+    events:
+      - http:
+          path: partes/{parte_id}/evidencias
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
+  confirmarCarga:
+    handler: handler.confirmar_carga
+    events:
+      - http:
+          path: partes/{parte_id}/evidencias/{evidencia_id}/confirmar
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
+  enlaceLectura:
+    handler: handler.enlace_lectura
+    events:
+      - http:
+          path: partes/{parte_id}/evidencias/{evidencia_id}/descargar
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
+resources:
+  Resources:
+    PartesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.PARTES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
+            AttributeType: S
+        KeySchema:
+          - AttributeName: PK
+            KeyType: HASH
+          - AttributeName: SK
+            KeyType: RANGE
+
+    EvidenciasBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        BucketName: ${self:custom.evidenciasBucket}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - "*"
+              AllowedMethods:
+                - POST
+                - GET
+                - HEAD
+              AllowedHeaders:
+                - "*"
+              MaxAge: 300
+
+  Outputs:
+    PartesTableName:
+      Value: !Ref PartesTable
+    EvidenciasBucketName:
+      Value: !Ref EvidenciasBucket

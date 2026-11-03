@@ -1,0 +1,449 @@
+"""MS5 Partes y evidencias: borradores y archivos S3 privados.
+
+Alcance de esta etapa: ADMIN/COORDINADOR crea borradores para visitas ya
+programadas, edita diagnóstico/resultado y carga evidencia S3 confirmada.
+La finalización con eventos SNS/SQS se añadirá al integrar MS4/órdenes.
+"""
+import json
+import os
+import re
+import uuid
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+import boto3
+from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeSerializer
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
+TABLE_NAME = os.environ["PARTES_TABLE"]
+BUCKET_NAME = os.environ["EVIDENCIAS_BUCKET"]
+AGENDA_BASE = os.environ["AGENDA_API_BASE"].rstrip("/")
+REGION = os.environ.get("AWS_REGION", "us-east-1")
+MAX_IMAGE = 5 * 1024 * 1024
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+TENANTS = {"CLIMALIMA", "FRIOSUR", "TECNINORTE"}
+ROLES = {"ADMIN", "COORDINADOR"}
+MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg"}
+RESULTADOS = {"PENDIENTE", "RESUELTO", "REQUIERE_REVISITA", "NO_ATENDIDO"}
+
+TABLE = boto3.resource("dynamodb").Table(TABLE_NAME)
+DYNAMODB = boto3.client("dynamodb")
+SER = TypeSerializer()
+S3 = boto3.client(
+    "s3", region_name=REGION,
+    config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+)
+
+
+def reply(status, data):
+    return {
+        "statusCode": status,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+            "Cache-Control": "no-store",
+        },
+        "body": json.dumps(data, ensure_ascii=False),
+    }
+
+
+def principal(event):
+    claims = (event.get("requestContext") or {}).get("authorizer") or {}
+    tenant = claims.get("tenant_id")
+    user = claims.get("usuario_id")
+    if tenant not in TENANTS or not user:
+        return None, reply(401, {"error": "No autorizado"})
+    if claims.get("rol") not in ROLES:
+        return None, reply(403, {"error": "Operación no permitida"})
+    return (tenant, user), None
+
+
+def bearer(event):
+    value = next((
+        val for key, val in (event.get("headers") or {}).items()
+        if isinstance(key, str) and key.lower() == "authorization"
+    ), None)
+    if not isinstance(value, str) or not value.lower().startswith("bearer "):
+        return None
+    return value
+
+
+def get_visit(visita_id, token):
+    req = urllib.request.Request(
+        AGENDA_BASE + "/visitas/" + visita_id,
+        headers={"Authorization": token, "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as response:
+            if response.status != 200:
+                return None, 502
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 404):
+            return None, exc.code
+        return None, 502
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None, 502
+    if not isinstance(payload, dict):
+        return None, 502
+    return payload.get("visita", {}), 200
+
+
+def path_id(event, name):
+    value = (event.get("pathParameters") or {}).get(name, "")
+    if not isinstance(value, str) or not UUID_RE.fullmatch(value):
+        raise ValueError(name + " inválido")
+    return value
+
+
+def json_body(event, fields):
+    try:
+        data = json.loads(event.get("body") or "{}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("JSON inválido") from exc
+    if not isinstance(data, dict) or (set(data) - fields):
+        raise ValueError("Campos no permitidos")
+    return data
+
+
+def to_av(value):
+    return {k: SER.serialize(v) for k, v in value.items()}
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def public_part(item):
+    return {k: item.get(k) for k in (
+        "parte_id", "visita_id", "orden_id", "tenant_id", "estado",
+        "diagnostico", "tareas", "resultado", "creado_en", "actualizado_en", "version",
+    )}
+
+
+def public_evidence(item):
+    return {k: item.get(k) for k in (
+        "evidencia_id", "parte_id", "tenant_id", "content_type", "estado",
+        "size_bytes", "creado_en", "confirmado_en",
+    ) if k in item}
+
+
+def get_part(tenant, parte_id):
+    return TABLE.get_item(
+        Key={"PK": f"TENANT#{tenant}", "SK": f"PARTE#{parte_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+
+
+def get_evidence(tenant, parte_id, evidencia_id):
+    return TABLE.get_item(
+        Key={
+            "PK": f"TENANT#{tenant}",
+            "SK": f"EVIDENCIA#{parte_id}#{evidencia_id}",
+        },
+        ConsistentRead=True,
+    ).get("Item")
+
+
+def crear_borrador(event, context):
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        visita_id = path_id(event, "visita_id")
+        data = json_body(event, set())
+    except ValueError as exc:
+        return reply(400, {"error": str(exc)})
+    token = bearer(event)
+    if not token:
+        return reply(401, {"error": "No autorizado"})
+    visit, status = get_visit(visita_id, token)
+    if status != 200:
+        return reply(
+            status if status in (401, 403, 404) else 502,
+            {"error": "No fue posible verificar la visita"},
+        )
+    tenant, user = actor
+    if visit.get("tenant_id") != tenant or visit.get("visita_id") != visita_id:
+        return reply(404, {"error": "Visita no encontrada"})
+    if visit.get("estado") not in ("PROGRAMADA", "EN_ATENCION"):
+        return reply(409, {"error": "Estado de visita incompatible"})
+    orden_id = visit.get("orden_id")
+    if not isinstance(orden_id, str) or not UUID_RE.fullmatch(orden_id):
+        return reply(502, {"error": "Visita sin orden válida"})
+
+    parte_id = str(uuid.uuid4())
+    pk = f"TENANT#{tenant}"
+    item = {
+        "PK": pk, "SK": f"PARTE#{parte_id}", "entity_type": "PARTE",
+        "tenant_id": tenant, "parte_id": parte_id, "visita_id": visita_id,
+        "orden_id": orden_id, "estado": "BORRADOR",
+        "diagnostico": "", "tareas": [], "resultado": "PENDIENTE",
+        "creado_por": user, "creado_en": now(), "actualizado_en": now(),
+        "version": 1,
+    }
+    mark = {
+        "PK": pk, "SK": f"VISITA_PARTE#{visita_id}", "entity_type": "VISITA_PARTE",
+        "tenant_id": tenant, "visita_id": visita_id, "parte_id": parte_id,
+    }
+    try:
+        DYNAMODB.transact_write_items(TransactItems=[
+            {"Put": {
+                "TableName": TABLE_NAME, "Item": to_av(item),
+                "ConditionExpression": "attribute_not_exists(PK)",
+            }},
+            {"Put": {
+                "TableName": TABLE_NAME, "Item": to_av(mark),
+                "ConditionExpression": "attribute_not_exists(PK)",
+            }},
+        ])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            return reply(409, {"error": "Ya existe un parte para esta visita"})
+        raise
+    return reply(201, {"parte": public_part(item)})
+
+
+def consultar(event, context):
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        parte_id = path_id(event, "parte_id")
+    except ValueError as exc:
+        return reply(400, {"error": str(exc)})
+    tenant, _ = actor
+    part = get_part(tenant, parte_id)
+    if not part:
+        return reply(404, {"error": "Parte no encontrado"})
+    response = TABLE.query(
+        KeyConditionExpression=(
+            Key("PK").eq(f"TENANT#{tenant}") &
+            Key("SK").begins_with(f"EVIDENCIA#{parte_id}#")
+        ),
+        ConsistentRead=True,
+        Limit=20,
+    )
+    return reply(200, {
+        "parte": public_part(part),
+        "evidencias": [public_evidence(e) for e in response.get("Items", [])],
+    })
+
+
+def actualizar(event, context):
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        parte_id = path_id(event, "parte_id")
+        data = json_body(event, {"diagnostico", "tareas", "resultado", "version"})
+        if set(data) != {"diagnostico", "tareas", "resultado", "version"}:
+            raise ValueError("Se requieren diagnostico, tareas, resultado y version")
+        diag = data["diagnostico"]
+        tareas = data["tareas"]
+        resultado = data["resultado"]
+        version = data["version"]
+        if not isinstance(diag, str) or len(diag.strip()) > 1000:
+            raise ValueError("diagnostico inválido")
+        if (not isinstance(tareas, list) or len(tareas) > 20 or
+                any(not isinstance(t, str) or not 1 <= len(t.strip()) <= 200 for t in tareas)):
+            raise ValueError("tareas inválidas")
+        if not isinstance(resultado, str) or resultado not in RESULTADOS:
+            raise ValueError("resultado inválido")
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError("version inválida")
+    except (ValueError, TypeError) as exc:
+        return reply(400, {"error": str(exc)})
+
+    tenant, _ = actor
+    if not get_part(tenant, parte_id):
+        return reply(404, {"error": "Parte no encontrado"})
+    try:
+        result = TABLE.update_item(
+            Key={"PK": f"TENANT#{tenant}", "SK": f"PARTE#{parte_id}"},
+            UpdateExpression=(
+                "SET diagnostico = :diag, tareas = :tareas, resultado = :resultado, "
+                "actualizado_en = :when, #version = :newversion"
+            ),
+            ConditionExpression="#estado = :borrador AND #version = :expected",
+            ExpressionAttributeNames={"#estado": "estado", "#version": "version"},
+            ExpressionAttributeValues={
+                ":diag": diag.strip(),
+                ":tareas": [t.strip() for t in tareas],
+                ":resultado": resultado,
+                ":when": now(),
+                ":newversion": version + 1,
+                ":borrador": "BORRADOR",
+                ":expected": version,
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except TABLE.meta.client.exceptions.ConditionalCheckFailedException:
+        return reply(409, {"error": "Versión desactualizada o parte no editable"})
+    return reply(200, {"parte": public_part(result["Attributes"])})
+
+
+def pedir_carga(event, context):
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        parte_id = path_id(event, "parte_id")
+        data = json_body(event, {"content_type"})
+        content_type = data.get("content_type")
+        if content_type not in MIME_TO_EXT:
+            raise ValueError("Se admiten image/jpeg e image/png")
+    except ValueError as exc:
+        return reply(400, {"error": str(exc)})
+    tenant, _ = actor
+    part = get_part(tenant, parte_id)
+    if not part:
+        return reply(404, {"error": "Parte no encontrado"})
+    if part.get("estado") != "BORRADOR":
+        return reply(409, {"error": "El parte no admite evidencias"})
+
+    evidencia_id = str(uuid.uuid4())
+    object_key = (
+        f"tenants/{tenant}/partes/{parte_id}/{evidencia_id}"
+        + MIME_TO_EXT[content_type]
+    )
+    item = {
+        "PK": f"TENANT#{tenant}",
+        "SK": f"EVIDENCIA#{parte_id}#{evidencia_id}",
+        "entity_type": "EVIDENCIA",
+        "tenant_id": tenant,
+        "parte_id": parte_id,
+        "evidencia_id": evidencia_id,
+        "estado": "PENDIENTE",
+        "content_type": content_type,
+        "object_key": object_key,
+        "creado_en": now(),
+    }
+    try:
+        form = S3.generate_presigned_post(
+            Bucket=BUCKET_NAME,
+            Key=object_key,
+            Fields={"Content-Type": content_type},
+            Conditions=[
+                {"Content-Type": content_type},
+                ["content-length-range", 1, MAX_IMAGE],
+            ],
+            ExpiresIn=300,
+        )
+        TABLE.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(PK) AND attribute_not_exists(SK)",
+        )
+    except ClientError as exc:
+        print("Error creando autorización de S3:", exc.response.get("Error", {}).get("Code"))
+        return reply(500, {"error": "No se pudo preparar la carga"})
+    return reply(201, {
+        "evidencia": public_evidence(item),
+        "upload": {"url": form["url"], "fields": form["fields"], "expira_en_segundos": 300},
+        "tamano_maximo_bytes": MAX_IMAGE,
+    })
+
+
+def confirmar_carga(event, context):
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        parte_id = path_id(event, "parte_id")
+        evidencia_id = path_id(event, "evidencia_id")
+    except ValueError as exc:
+        return reply(400, {"error": str(exc)})
+    tenant, _ = actor
+    part = get_part(tenant, parte_id)
+    if not part:
+        return reply(404, {"error": "Parte no encontrado"})
+    evidence = get_evidence(tenant, parte_id, evidencia_id)
+    if not evidence:
+        return reply(404, {"error": "Evidencia no encontrada"})
+    if evidence.get("estado") == "CONFIRMADA":
+        return reply(200, {"evidencia": public_evidence(evidence)})
+    if evidence.get("estado") != "PENDIENTE" or part.get("estado") != "BORRADOR":
+        return reply(409, {"error": "Evidencia no confirmable"})
+    try:
+        head = S3.head_object(Bucket=BUCKET_NAME, Key=evidence["object_key"])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("ResponseMetadata", {}).get("HTTPStatusCode") in (403, 404):
+            return reply(409, {"error": "Archivo aún no disponible o sin acceso"})
+        raise
+    size = head.get("ContentLength", 0)
+    if not 1 <= size <= MAX_IMAGE or head.get("ContentType") != evidence["content_type"]:
+        return reply(422, {"error": "Tamaño o tipo de archivo inválido"})
+    try:
+        result = TABLE.update_item(
+            Key={"PK": f"TENANT#{tenant}", "SK": f"EVIDENCIA#{parte_id}#{evidencia_id}"},
+            UpdateExpression=(
+                "SET #estado = :confirmada, size_bytes = :size, confirmado_en = :now"
+            ),
+            ConditionExpression="#estado = :pendiente",
+            ExpressionAttributeNames={"#estado": "estado"},
+            ExpressionAttributeValues={
+                ":confirmada": "CONFIRMADA",
+                ":pendiente": "PENDIENTE",
+                ":size": size,
+                ":now": now(),
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except TABLE.meta.client.exceptions.ConditionalCheckFailedException:
+        return reply(409, {"error": "Evidencia cambiada por otra solicitud"})
+    return reply(200, {"evidencia": public_evidence(result["Attributes"])})
+
+
+def enlace_lectura(event, context):
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        parte_id = path_id(event, "parte_id")
+        evidencia_id = path_id(event, "evidencia_id")
+    except ValueError as exc:
+        return reply(400, {"error": str(exc)})
+    tenant, _ = actor
+    if not get_part(tenant, parte_id):
+        return reply(404, {"error": "Parte no encontrado"})
+    evidence = get_evidence(tenant, parte_id, evidencia_id)
+    if not evidence or evidence.get("estado") != "CONFIRMADA":
+        return reply(404, {"error": "Evidencia no confirmada"})
+    url = S3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": BUCKET_NAME, "Key": evidence["object_key"]},
+        ExpiresIn=120,
+    )
+    return reply(200, {"url": url, "expira_en_segundos": 120})
+
+
+def buscar_por_visita(event, context):
+    """Recupera el único borrador existente de una visita (evita duplicados)."""
+    actor, error = principal(event)
+    if error:
+        return error
+    try:
+        visita_id = path_id(event, "visita_id")
+    except ValueError as exc:
+        return reply(400, {"error": str(exc)})
+    tenant, _ = actor
+    marker = TABLE.get_item(
+        Key={"PK": f"TENANT#{tenant}", "SK": f"VISITA_PARTE#{visita_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+    if not marker:
+        return reply(404, {"error": "La visita aún no tiene parte"})
+    parte_id = marker.get("parte_id")
+    if not isinstance(parte_id, str) or not UUID_RE.fullmatch(parte_id):
+        return reply(500, {"error": "Parte inconsistente"})
+    part = get_part(tenant, parte_id)
+    if not part:
+        return reply(500, {"error": "Parte inconsistente"})
+    return reply(200, {"parte": public_part(part)})

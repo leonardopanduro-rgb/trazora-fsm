@@ -163,6 +163,7 @@ def main():
 
         code, data = pedir(ms5, "/partes/" + parte_id, token=clima)
         part = data.get("parte", {}) if isinstance(data, dict) else {}
+        evidencias_existentes = data.get("evidencias", []) if isinstance(data, dict) else []
         ok = comprobar("CLIMALIMA consulta parte", code, 200,
                        part.get("tenant_id") == "CLIMALIMA") and ok
 
@@ -188,34 +189,52 @@ def main():
             code, _ = pedir(ms5, "/partes/" + parte_id, "PATCH", update, clima)
             ok = comprobar("Rechazar edición con versión antigua", code, 409) and ok
 
-        if input("¿Subir una imagen PNG ficticia de 1 píxel a S3? Escribe SI: ").strip() != "SI":
-            print("Se omite la prueba de S3.")
-            return 0 if ok else 1
-
-        code, data = pedir(ms5, f"/partes/{parte_id}/evidencias", "POST",
-                           {"content_type": "image/png"}, clima)
-        evidence = data.get("evidencia", {}) if isinstance(data, dict) else {}
-        evidencia_id = evidence.get("evidencia_id")
-        ok = comprobar("Preparar evidencia S3", code, 201, bool(evidencia_id)) and ok
-        if not evidencia_id:
-            print("No se obtuvo evidencia:", str(data.get("error", ""))[:180])
-            return 1
-        try:
-            status_s3 = formulario_s3(data["upload"])
-        except (ValueError, KeyError) as exc:
-            print("No se pudo construir el formulario S3:", str(exc)[:120])
-            return 1
-        ok = comprobar("Subir PNG directamente a S3", status_s3, 204) and ok
-        if status_s3 != 204:
-            print("Revisa permisos de S3 o configuración del bucket, sin compartir el formulario firmado.")
-            return 1
-        code, data = pedir(
-            ms5, f"/partes/{parte_id}/evidencias/{evidencia_id}/confirmar",
-            "POST", {}, clima,
+        confirmada = next(
+            (ev for ev in evidencias_existentes
+             if ev.get("estado") == "CONFIRMADA" and ev.get("evidencia_id")),
+            None,
         )
-        e = data.get("evidencia", {}) if isinstance(data, dict) else {}
-        ok = comprobar("Confirmar archivo", code, 200, e.get("estado") == "CONFIRMADA") and ok
-
+        if confirmada:
+            # No repetir la carga de archivos tras una respuesta 502: el registro
+            # pudo haberse actualizado correctamente antes de fallar al serializar.
+            evidencia_id = confirmada["evidencia_id"]
+            print("Reutilizando evidencia S3 ya confirmada; no se sube otra imagen.")
+            code, data = pedir(
+                ms5, f"/partes/{parte_id}/evidencias/{evidencia_id}/confirmar",
+                "POST", {}, clima,
+            )
+            ev = data.get("evidencia", {}) if isinstance(data, dict) else {}
+            ok = comprobar("Reconfirmar evidencia existente", code, 200,
+                           ev.get("estado") == "CONFIRMADA") and ok
+        else:
+            if input("¿Subir una imagen PNG ficticia de 1 píxel a S3? Escribe SI: ").strip() != "SI":
+                print("Se omite la prueba de S3.")
+                return 0 if ok else 1
+    
+            code, data = pedir(ms5, f"/partes/{parte_id}/evidencias", "POST",
+                               {"content_type": "image/png"}, clima)
+            evidence = data.get("evidencia", {}) if isinstance(data, dict) else {}
+            evidencia_id = evidence.get("evidencia_id")
+            ok = comprobar("Preparar evidencia S3", code, 201, bool(evidencia_id)) and ok
+            if not evidencia_id:
+                print("No se obtuvo evidencia:", str(data.get("error", ""))[:180])
+                return 1
+            try:
+                status_s3 = formulario_s3(data["upload"])
+            except (ValueError, KeyError) as exc:
+                print("No se pudo construir el formulario S3:", str(exc)[:120])
+                return 1
+            ok = comprobar("Subir PNG directamente a S3", status_s3, 204) and ok
+            if status_s3 != 204:
+                print("Revisa permisos de S3 o configuración del bucket, sin compartir el formulario firmado.")
+                return 1
+            code, data = pedir(
+                ms5, f"/partes/{parte_id}/evidencias/{evidencia_id}/confirmar",
+                "POST", {}, clima,
+            )
+            e = data.get("evidencia", {}) if isinstance(data, dict) else {}
+            ok = comprobar("Confirmar archivo", code, 200, e.get("estado") == "CONFIRMADA") and ok
+    
         code, data = pedir(
             ms5, f"/partes/{parte_id}/evidencias/{evidencia_id}/descargar",
             token=clima,

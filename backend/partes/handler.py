@@ -17,6 +17,7 @@ from boto3.dynamodb.conditions import Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from json_utils import decimal_default
 
 TABLE_NAME = os.environ["PARTES_TABLE"]
 BUCKET_NAME = os.environ["EVIDENCIAS_BUCKET"]
@@ -49,7 +50,7 @@ def reply(status, data):
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
             "Cache-Control": "no-store",
         },
-        "body": json.dumps(data, ensure_ascii=False),
+        "body": json.dumps(data, ensure_ascii=False, default=decimal_default),
     }
 
 

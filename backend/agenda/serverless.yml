@@ -45,6 +45,15 @@ functions:
           cors: true
           authorizer: *ms0Auth
 
+  reservasFuturas:
+    handler: handler.reservas_futuras
+    events:
+      - http:
+          path: tecnicos/{tecnico_id}/reservas-futuras
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
 resources:
   Resources:
     AgendaTable:

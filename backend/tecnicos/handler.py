@@ -9,12 +9,16 @@ import json
 import os
 import re
 import uuid
+import urllib.error
+import urllib.request
+from botocore.exceptions import ClientError
 from datetime import date, datetime, timedelta, timezone
 
 import boto3
 from boto3.dynamodb.conditions import Key
 
 TABLE = boto3.resource("dynamodb").Table(os.environ["TECNICOS_TABLE"])
+AGENDA_API_BASE = os.environ["AGENDA_API_BASE"].rstrip("/")
 TENANTS = frozenset(("CLIMALIMA", "FRIOSUR", "TECNINORTE"))
 WRITERS = frozenset(("ADMIN", "COORDINADOR"))
 ESPECIALIDADES = frozenset(("INSTALACION", "MANTENIMIENTO", "REPARACION"))
@@ -175,6 +179,98 @@ def buscar(event, context):
     if not tecnico:
         return respuesta(404, {"error": "Técnico no encontrado"})
     return respuesta(200, {"tecnico": publico_tecnico(tecnico)})
+
+
+
+def comprobar_reservas_en_agenda(tecnico_id, autorizacion):
+    """Consulta en MS4 los bloques actualmente reservados o futuros.
+
+    Fail-closed: si Agenda no responde, no se permite desactivar al técnico.
+    La consulta usa el token del solicitante y el tenant del autorizador MS4.
+    """
+    req = urllib.request.Request(
+        AGENDA_API_BASE + "/tecnicos/" + tecnico_id + "/reservas-futuras",
+        headers={"Authorization": autorizacion, "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as result:
+            if result.status != 200:
+                return None
+            payload = json.load(result)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    if isinstance(payload, dict) and type(payload.get("tiene_reservas")) is bool:
+        return payload["tiene_reservas"]
+    return None
+
+
+def cambiar_estado(event, context):
+    """ADMIN puede activar o desactivar un técnico de su propia empresa.
+
+    Para desactivar se consulta MS4. Nunca se desactiva si la verificación
+    de reservas falla o detecta alguna reserva futura/en curso.
+    """
+    tenant, error = autenticado(event)
+    if error:
+        return error
+    claims = (event.get("requestContext") or {}).get("authorizer") or {}
+    if claims.get("rol") != "ADMIN":
+        return respuesta(403, {"error": "Solo ADMIN puede cambiar el estado"})
+
+    try:
+        tecnico_id = id_param(event)
+        datos = datos_json(event, {"activo"})
+        if set(datos) != {"activo"} or type(datos["activo"]) is not bool:
+            raise ValueError("Se requiere activo con valor booleano true o false")
+    except ValueError as exc:
+        return respuesta(400, {"error": str(exc)})
+
+    tecnico = tecnico_de(tenant, tecnico_id)
+    if not tecnico:
+        return respuesta(404, {"error": "Técnico no encontrado"})
+
+    activo_actual = tecnico.get("activo")
+    nuevo_estado = datos["activo"]
+    if type(activo_actual) is not bool:
+        return respuesta(409, {"error": "El estado del técnico es inconsistente"})
+    if activo_actual == nuevo_estado:
+        return respuesta(200, {"tecnico": publico_tecnico(tecnico), "sin_cambios": True})
+
+    if nuevo_estado is False:
+        auth = next((
+            value for key, value in (event.get("headers") or {}).items()
+            if isinstance(key, str) and key.lower() == "authorization"
+        ), None)
+        if not isinstance(auth, str) or not auth.lower().startswith("bearer "):
+            return respuesta(401, {"error": "Falta token de autorización"})
+
+        tiene_reservas = comprobar_reservas_en_agenda(tecnico_id, auth)
+        if tiene_reservas is None:
+            return respuesta(503, {"error": "No se pudo comprobar reservas en Agenda"})
+        if tiene_reservas:
+            return respuesta(409, {"error": "El técnico tiene visitas reservadas, cancélalas o reasígnalas antes"})
+
+    try:
+        resultado = TABLE.update_item(
+            Key={"PK": f"TENANT#{tenant}", "SK": f"TECNICO#{tecnico_id}"},
+            UpdateExpression="SET #activo = :nuevo, actualizado_en = :ahora",
+            ConditionExpression="attribute_exists(PK) AND #activo = :anterior",
+            ExpressionAttributeNames={"#activo": "activo"},
+            ExpressionAttributeValues={
+                ":nuevo": nuevo_estado,
+                ":anterior": activo_actual,
+                ":ahora": datetime.now(timezone.utc).isoformat(),
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code == "ConditionalCheckFailedException":
+            return respuesta(409, {"error": "El estado cambió, vuelve a consultar al técnico"})
+        print("Error actualizando estado técnico:", code)
+        return respuesta(500, {"error": "No se pudo actualizar el técnico"})
+    return respuesta(200, {"tecnico": publico_tecnico(resultado["Attributes"]), "sin_cambios": False})
 
 
 def fecha_iso(valor):

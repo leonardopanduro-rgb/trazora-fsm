@@ -322,6 +322,39 @@ def listar(event, context):
     })
 
 
+
+def reservas_futuras(event, context):
+    """Indica si el técnico tiene algún bloque reservado ahora o después.
+
+    Consulta por clave, sin scan, usando el índice de ordenación actual
+    BLOQUE#<tecnico_id>#<inicio_utc>. Una visita de hasta 4h tiene un
+    BLOQUE cada media hora. Se incluye el bloque de la media hora en curso.
+    """
+    tenant, error = principal(event)
+    if error:
+        return error
+    tecnico_id = (event.get("pathParameters") or {}).get("tecnico_id", "")
+    if not isinstance(tecnico_id, str) or not UUID_RE.fullmatch(tecnico_id):
+        return response(400, {"error": "tecnico_id inválido"})
+
+    fecha = datetime.now(timezone.utc)
+    comienzo = fecha.replace(minute=(fecha.minute // 30) * 30, second=0, microsecond=0)
+    prefijo = f"BLOQUE#{tecnico_id}#"
+    desde = prefijo + comienzo.isoformat(timespec="seconds").replace("+00:00", "Z")
+    resultado = TABLE.query(
+        KeyConditionExpression=(
+            Key("PK").eq(f"TENANT#{tenant}") &
+            Key("SK").between(desde, prefijo + "\uffff")
+        ),
+        ConsistentRead=True,
+        Limit=1,
+    )
+    return response(200, {
+        "tecnico_id": tecnico_id,
+        "tiene_reservas": bool(resultado.get("Items")),
+    })
+
+
 def buscar(event, context):
     tenant, error = principal(event)
     if error:

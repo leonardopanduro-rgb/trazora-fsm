@@ -145,7 +145,9 @@ class TestEstadoTecnico(unittest.TestCase):
         self.verificar.stop()
         self.check = None
         respuesta = mock.MagicMock()
-        respuesta.status = 200
+        # urllib.request.urlopen se usa con "with". El status está en
+        # el objeto devuelto por __enter__, no en el context manager.
+        respuesta.__enter__.return_value.status = 200
         with mock.patch.object(self.mod.urllib.request, "urlopen",
                                return_value=respuesta) as fake_http, \
              mock.patch.object(self.mod.json, "load",

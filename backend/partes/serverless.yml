@@ -75,6 +75,15 @@ functions:
           cors: true
           authorizer: *ms0Auth
 
+  finalizar:
+    handler: handler.finalizar
+    events:
+      - http:
+          path: partes/{parte_id}/finalizar
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
   enlaceLectura:
     handler: handler.enlace_lectura
     events:

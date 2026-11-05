@@ -45,6 +45,33 @@ functions:
           cors: true
           authorizer: *ms0Auth
 
+  iniciar:
+    handler: handler.iniciar
+    events:
+      - http:
+          path: visitas/{visita_id}/iniciar
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
+  reprogramar:
+    handler: handler.reprogramar
+    events:
+      - http:
+          path: visitas/{visita_id}/reprogramar
+          method: patch
+          cors: true
+          authorizer: *ms0Auth
+
+  cancelar:
+    handler: handler.cancelar
+    events:
+      - http:
+          path: visitas/{visita_id}/cancelar
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
   reservasFuturas:
     handler: handler.reservas_futuras
     events:

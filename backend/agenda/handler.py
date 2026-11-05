@@ -141,9 +141,13 @@ def dinamodb_item(item):
 def public(item):
     keys = (
         "visita_id", "tenant_id", "orden_id", "tecnico_id", "inicio",
-        "fin", "estado", "creada_en",
+        "fin", "estado", "creada_en", "version", "iniciada_en",
+        "reprogramada_en", "cancelada_en",
     )
-    return {key: item.get(key) for key in keys}
+    values = {key: item.get(key) for key in keys if key in item}
+    if "version" in values:
+        values["version"] = int(values["version"])
+    return values
 
 
 def crear(event, context):
@@ -224,6 +228,7 @@ def crear(event, context):
         "orden_id": orden_id, "tecnico_id": tecnico_id,
         "inicio": body["inicio"], "fin": body["fin"],
         "estado": "PROGRAMADA", "creada_en": datetime.now(timezone.utc).isoformat(),
+        "version": 1,
     }
     actions = [
         {"Put": {
@@ -354,6 +359,357 @@ def reservas_futuras(event, context):
         "tiene_reservas": bool(resultado.get("Items")),
     })
 
+
+
+
+def visita_de(tenant, visita_id):
+    return TABLE.get_item(
+        Key={"PK": f"TENANT#{tenant}", "SK": f"VISITA#{visita_id}"},
+        ConsistentRead=True,
+    ).get("Item")
+
+
+def visita_id_de(event):
+    visita_id = (event.get("pathParameters") or {}).get("visita_id", "")
+    if not isinstance(visita_id, str) or not UUID_RE.fullmatch(visita_id):
+        raise ValueError("visita_id inválido")
+    return visita_id
+
+
+def cuerpo_exacto(event, campos):
+    try:
+        datos = json.loads(event.get("body") or "{}")
+    except (ValueError, TypeError) as exc:
+        raise ValueError("JSON inválido") from exc
+    if not isinstance(datos, dict) or set(datos) != campos:
+        raise ValueError("Campos inválidos: " + ", ".join(sorted(campos)))
+    return datos
+
+
+def lectura_version(item):
+    """Compatibilidad con visitas antiguas, creadas sin version."""
+    from decimal import Decimal
+    version = item.get("version")
+    if version is None:
+        return 1, True
+    if (isinstance(version, bool) or
+            not isinstance(version, (int, Decimal)) or
+            not 1 <= version <= 2_000_000_000 or version != int(version)):
+        raise ValueError("Versión de visita incompatible")
+    return int(version), False
+
+
+def condicion_programada(item, extra=None):
+    version, antigua = lectura_version(item)
+    cond = ("#estado = :programada AND tecnico_id = :anterior_tecnico "
+            "AND inicio = :anterior_inicio AND fin = :anterior_fin "
+            "AND " + ("attribute_not_exists(#version)" if antigua else "#version = :esperada"))
+    nombres = {"#estado": "estado", "#version": "version"}
+    valores = {
+        ":programada": "PROGRAMADA",
+        ":anterior_tecnico": item["tecnico_id"],
+        ":anterior_inicio": item["inicio"],
+        ":anterior_fin": item["fin"],
+    }
+    if not antigua:
+        valores[":esperada"] = version
+    return cond, nombres, valores, version
+
+
+def slots_visita(tecnico_id, inicio_raw, fin_raw):
+    """Conjunto de SK de bloques de 30 minutos; no aplica validación futura."""
+    inicio = parse_instant(inicio_raw)
+    fin = parse_instant(fin_raw)
+    if not inicio < fin or (fin - inicio).total_seconds() % 1800:
+        raise ValueError("Bloques de visita inconsistentes")
+    bloques = set()
+    instante = inicio
+    while instante < fin:
+        stamp = instante.isoformat(timespec="seconds").replace("+00:00", "Z")
+        bloques.add(f"BLOQUE#{tecnico_id}#{stamp}")
+        instante += timedelta(minutes=30)
+    if len(bloques) > 8:
+        raise ValueError("Demasiados bloques en la visita")
+    return bloques
+
+
+def ejecutar_transaccion(acciones, operacion):
+    try:
+        DB_CLIENT.transact_write_items(TransactItems=acciones)
+        return None
+    except ClientError as exc:
+        codigo = exc.response.get("Error", {}).get("Code")
+        if codigo in ("TransactionCanceledException", "ConditionalCheckFailedException"):
+            return response(409, {"error": f"Conflicto al {operacion}: actualiza la visita o revisa las reservas"})
+        print("Error DynamoDB en ciclo de visita:", operacion, codigo)
+        return response(500, {"error": "No se pudo completar la operación"})
+
+
+def validar_asignacion(tenant, orden_id, tecnico_id, inicio_lima, fin_lima, auth):
+    """Valida referencias por API; jamás lee las tablas de MS2/MS3."""
+    orden_res, status = get_protegido(ORDENES_API, "/ordenes/" + orden_id, auth)
+    if status != 200:
+        return response(
+            404 if status == 404 else 401 if status in (401, 403) else 502,
+            {"error": "No se pudo validar la orden"},
+        )
+    orden = orden_res.get("orden", {}) if isinstance(orden_res, dict) else {}
+    if orden.get("tenant_id") != tenant or orden.get("orden_id") != orden_id:
+        return response(404, {"error": "Orden no encontrada"})
+    if orden.get("estado") != "ABIERTA":
+        return response(409, {"error": "La orden no admite cambios de agenda"})
+
+    tech_res, status = get_protegido(TECNICOS_API, "/tecnicos/" + tecnico_id, auth)
+    if status != 200:
+        return response(
+            404 if status == 404 else 401 if status in (401, 403) else 502,
+            {"error": "No se pudo validar el técnico"},
+        )
+    tecnico = tech_res.get("tecnico", {}) if isinstance(tech_res, dict) else {}
+    if tecnico.get("tenant_id") != tenant or tecnico.get("tecnico_id") != tecnico_id:
+        return response(404, {"error": "Técnico no encontrado"})
+    if tecnico.get("activo") is not True:
+        return response(409, {"error": "Técnico inactivo"})
+    if orden.get("tipo_servicio") not in tecnico.get("especialidades", []):
+        return response(422, {"error": "Técnico sin especialidad para la orden"})
+
+    dia = inicio_lima.date().isoformat()
+    jorn_res, status = get_protegido(
+        TECNICOS_API,
+        f"/tecnicos/{tecnico_id}/jornadas?desde={dia}&hasta={dia}",
+        auth,
+    )
+    if status != 200:
+        return response(
+            404 if status == 404 else 401 if status in (401, 403) else 502,
+            {"error": "No se pudo validar la jornada"},
+        )
+    jornadas = jorn_res.get("jornadas", []) if isinstance(jorn_res, dict) else []
+    valido = any(
+        isinstance(j, dict) and
+        j.get("fecha") == dia and
+        j.get("tenant_id") == tenant and
+        j.get("tecnico_id") == tecnico_id and
+        dentro_jornada(inicio_lima, fin_lima, j.get("intervalos", []))
+        for j in jornadas
+    )
+    if not valido:
+        return response(409, {"error": "Horario fuera de la jornada del técnico"})
+    return None
+
+
+def iniciar(event, context):
+    """PROGRAMADA -> EN_ATENCION, con control de concurrencia e idempotencia."""
+    tenant, error = principal(event)
+    if error:
+        return error
+    try:
+        visita_id = visita_id_de(event)
+        cuerpo_exacto(event, set())
+    except ValueError as exc:
+        return response(400, {"error": str(exc)})
+    item = visita_de(tenant, visita_id)
+    if not item:
+        return response(404, {"error": "Visita no encontrada"})
+    if item.get("estado") == "EN_ATENCION":
+        return response(200, {"visita": public(item), "sin_cambios": True})
+    if item.get("estado") != "PROGRAMADA":
+        return response(409, {"error": "La visita no se puede iniciar en su estado actual"})
+    try:
+        condicion, nombres, valores, version = condicion_programada(item)
+    except (ValueError, KeyError):
+        return response(409, {"error": "Visita inconsistente"})
+    momento = datetime.now(timezone.utc).isoformat()
+    nombres["#estado"] = "estado"
+    valores.update({
+        ":nuevo_estado": "EN_ATENCION",
+        ":nueva_version": version + 1,
+        ":momento": momento,
+    })
+    try:
+        resultado = TABLE.update_item(
+            Key={"PK": f"TENANT#{tenant}", "SK": f"VISITA#{visita_id}"},
+            UpdateExpression=(
+                "SET #estado = :nuevo_estado, #version = :nueva_version, iniciada_en = :momento"
+            ),
+            ConditionExpression=condicion,
+            ExpressionAttributeNames=nombres,
+            ExpressionAttributeValues=valores,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return response(409, {"error": "La visita cambió mientras se intentaba iniciar"})
+        print("Error al iniciar visita:", exc.response.get("Error", {}).get("Code"))
+        return response(500, {"error": "No se pudo iniciar la visita"})
+    return response(200, {"visita": public(resultado["Attributes"]), "sin_cambios": False})
+
+
+def reprogramar(event, context):
+    """Cambia técnico/horario, moviendo bloques atómicamente sin tocar el contador."""
+    tenant, error = principal(event)
+    if error:
+        return error
+    try:
+        visita_id = visita_id_de(event)
+        datos = cuerpo_exacto(event, {"tecnico_id", "inicio", "fin"})
+        tecnico_id = datos["tecnico_id"]
+        if not isinstance(tecnico_id, str) or not UUID_RE.fullmatch(tecnico_id):
+            raise ValueError("tecnico_id inválido")
+        _, _, inicio_lima, fin_lima = validar_horario(datos["inicio"], datos["fin"])
+    except (ValueError, TypeError) as exc:
+        return response(400, {"error": str(exc)})
+
+    item = visita_de(tenant, visita_id)
+    if not item:
+        return response(404, {"error": "Visita no encontrada"})
+    if item.get("estado") != "PROGRAMADA":
+        return response(409, {"error": "Solo puede reprogramarse una visita PROGRAMADA"})
+
+    if (item.get("tecnico_id"), item.get("inicio"), item.get("fin")) == (
+            tecnico_id, datos["inicio"], datos["fin"]):
+        return response(200, {"visita": public(item), "sin_cambios": True})
+
+    auth = bearer(event)
+    if not auth:
+        return response(401, {"error": "No autorizado"})
+    orden_id = item.get("orden_id")
+    if not isinstance(orden_id, str) or not UUID_RE.fullmatch(orden_id):
+        return response(409, {"error": "Orden de visita inconsistente"})
+    error = validar_asignacion(
+        tenant, orden_id, tecnico_id, inicio_lima, fin_lima, auth
+    )
+    if error:
+        return error
+    try:
+        viejos = slots_visita(item["tecnico_id"], item["inicio"], item["fin"])
+        nuevos = slots_visita(tecnico_id, datos["inicio"], datos["fin"])
+        condicion, nombres, valores, version = condicion_programada(item)
+    except (ValueError, KeyError):
+        return response(409, {"error": "Bloques antiguos inconsistentes"})
+    momento = datetime.now(timezone.utc).isoformat()
+    pk = f"TENANT#{tenant}"
+    valores.update({
+        ":nuevo_tecnico": tecnico_id,
+        ":nuevo_inicio": datos["inicio"],
+        ":nuevo_fin": datos["fin"],
+        ":nueva_version": version + 1,
+        ":momento": momento,
+    })
+    acciones = [{
+        "Update": {
+            "TableName": TABLE_NAME,
+            "Key": dinamodb_item({"PK": pk, "SK": f"VISITA#{visita_id}"}),
+            "UpdateExpression": (
+                "SET tecnico_id = :nuevo_tecnico, inicio = :nuevo_inicio, "
+                "fin = :nuevo_fin, #version = :nueva_version, reprogramada_en = :momento"
+            ),
+            "ConditionExpression": condicion,
+            "ExpressionAttributeNames": nombres,
+            "ExpressionAttributeValues": dinamodb_item(valores),
+        },
+    }]
+    # No se puede modificar un mismo ítem dos veces en una TransactWriteItems.
+    # Los bloques comunes de ambos horarios quedan intactos.
+    for sk in sorted(viejos - nuevos):
+        acciones.append({"Delete": {
+            "TableName": TABLE_NAME,
+            "Key": dinamodb_item({"PK": pk, "SK": sk}),
+            "ConditionExpression": "visita_id = :visita",
+            "ExpressionAttributeValues": dinamodb_item({":visita": visita_id}),
+        }})
+    for sk in sorted(nuevos - viejos):
+        partes = sk.split("#")
+        acciones.append({"Put": {
+            "TableName": TABLE_NAME,
+            "Item": dinamodb_item({
+                "PK": pk, "SK": sk, "entity_type": "BLOQUE",
+                "tenant_id": tenant, "tecnico_id": tecnico_id, "visita_id": visita_id,
+            }),
+            "ConditionExpression": "attribute_not_exists(PK)",
+        }})
+    # Un bloqueo de cierre de MS3 puede impedir reprogramaciones nuevas.
+    acciones.append({"ConditionCheck": {
+        "TableName": TABLE_NAME,
+        "Key": dinamodb_item({"PK": pk, "SK": f"CONTROL_ORDEN#{orden_id}"}),
+        "ConditionExpression": "attribute_exists(PK) AND acepta_programaciones = :abierto",
+        "ExpressionAttributeValues": dinamodb_item({":abierto": True}),
+    }})
+    error = ejecutar_transaccion(acciones, "reprogramar")
+    if error:
+        return error
+    nuevo = dict(item, **{
+        "tecnico_id": tecnico_id, "inicio": datos["inicio"], "fin": datos["fin"],
+        "version": version + 1, "reprogramada_en": momento,
+    })
+    return response(200, {"visita": public(nuevo), "sin_cambios": False})
+
+
+def cancelar(event, context):
+    """Cancela visita PROGRAMADA, libera todos los bloques y decrementa una vez."""
+    tenant, error = principal(event)
+    if error:
+        return error
+    try:
+        visita_id = visita_id_de(event)
+        cuerpo_exacto(event, set())
+    except ValueError as exc:
+        return response(400, {"error": str(exc)})
+    item = visita_de(tenant, visita_id)
+    if not item:
+        return response(404, {"error": "Visita no encontrada"})
+    if item.get("estado") == "CANCELADA":
+        return response(200, {"visita": public(item), "sin_cambios": True})
+    if item.get("estado") != "PROGRAMADA":
+        return response(409, {"error": "Solo puede cancelarse una visita PROGRAMADA"})
+    try:
+        bloques = slots_visita(item["tecnico_id"], item["inicio"], item["fin"])
+        condicion, nombres, valores, version = condicion_programada(item)
+        orden_id = item["orden_id"]
+        if not isinstance(orden_id, str) or not UUID_RE.fullmatch(orden_id):
+            raise ValueError("Orden inválida")
+    except (KeyError, ValueError):
+        return response(409, {"error": "Reservas antiguas inconsistentes"})
+    pk = f"TENANT#{tenant}"
+    momento = datetime.now(timezone.utc).isoformat()
+    valores.update({
+        ":nuevo_estado": "CANCELADA",
+        ":nueva_version": version + 1,
+        ":momento": momento,
+    })
+    acciones = [{
+        "Update": {
+            "TableName": TABLE_NAME,
+            "Key": dinamodb_item({"PK": pk, "SK": f"VISITA#{visita_id}"}),
+            "UpdateExpression": (
+                "SET #estado = :nuevo_estado, #version = :nueva_version, cancelada_en = :momento"
+            ),
+            "ConditionExpression": condicion,
+            "ExpressionAttributeNames": nombres,
+            "ExpressionAttributeValues": dinamodb_item(valores),
+        },
+    }]
+    for sk in sorted(bloques):
+        acciones.append({"Delete": {
+            "TableName": TABLE_NAME,
+            "Key": dinamodb_item({"PK": pk, "SK": sk}),
+            "ConditionExpression": "visita_id = :visita",
+            "ExpressionAttributeValues": dinamodb_item({":visita": visita_id}),
+        }})
+    acciones.append({"Update": {
+        "TableName": TABLE_NAME,
+        "Key": dinamodb_item({"PK": pk, "SK": f"CONTROL_ORDEN#{orden_id}"}),
+        "UpdateExpression": "ADD visitas_activas :menos",
+        "ConditionExpression": "attribute_exists(PK) AND visitas_activas >= :uno",
+        "ExpressionAttributeValues": dinamodb_item({":menos": -1, ":uno": 1}),
+    }})
+    error = ejecutar_transaccion(acciones, "cancelar")
+    if error:
+        return error
+    nuevo = dict(item, **{
+        "estado": "CANCELADA", "version": version + 1, "cancelada_en": momento,
+    })
+    return response(200, {"visita": public(nuevo), "sin_cambios": False})
 
 def buscar(event, context):
     tenant, error = principal(event)

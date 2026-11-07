@@ -154,7 +154,7 @@ def main():
             "Finalizar parte y registrar OUTBOX", code, 200,
             parte.get("estado") == "FINALIZADO" and
             evento.get("event_type") == "ParteFinalizado" and
-            evento.get("estado") == "PENDIENTE_PUBLICACION" and
+            evento.get("estado") in ("PENDIENTE_PUBLICACION", "PUBLICADO") and
             bool(evento.get("event_id")),
         ) and ok
         if code != 200:
@@ -178,7 +178,7 @@ def main():
         code, result = pedir(MS4, "/visitas/" + visita_id, token=clima)
         if code == 200:
             print("Estado MS4 actual:", result.get("visita", {}).get("estado"),
-                  "(esperado EN_ATENCION antes de consumidores SQS)")
+                  "(EN_ATENCION si el consumidor esta deshabilitado; FINALIZADA despues de procesar SQS)")
         print("RESULTADO FINAL:",
               "TODAS LAS PRUEBAS PASARON" if ok else "REVISAR")
         return 0 if ok else 1

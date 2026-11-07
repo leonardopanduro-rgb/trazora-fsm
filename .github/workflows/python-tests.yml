@@ -1,0 +1,32 @@
+name: Python backend tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/eda-sns-sqs-academy-2026-11-06'
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install boto3
+      - name: Compile handlers and consumers
+        run: |
+          python -m compileall -q backend tests
+      - name: Run unit tests without AWS credentials
+        env:
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_EC2_METADATA_DISABLED: 'true'
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v

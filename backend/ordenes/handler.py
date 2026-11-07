@@ -91,10 +91,15 @@ def verificar_cliente(tenant, cliente_id, event):
 
 
 def mostrar(item):
-    return {key: item.get(key) for key in (
+    datos = {key: item.get(key) for key in (
         "orden_id", "tenant_id", "cliente_id", "tipo_servicio",
         "descripcion", "prioridad", "estado", "creada_en", "creada_por",
     )}
+    for key in ("ultimo_resultado", "ultima_visita_id", "ultimo_parte_id",
+                "requiere_revisita", "actualizado_en"):
+        if key in item:
+            datos[key] = item[key]
+    return datos
 
 
 def crear(event, context):
@@ -209,3 +214,59 @@ def buscar(event, context):
     if not item:
         return responder(404, {"error": "Orden no encontrada"})
     return responder(200, {"orden": mostrar(item)})
+
+def historial(event, context):
+    """Historial de eventos de la orden dentro del tenant autenticado."""
+    actor, error = identidad(event)
+    if error:
+        return error
+    orden_id = (event.get("pathParameters") or {}).get("orden_id", "")
+    if not isinstance(orden_id, str) or not UUID_RE.fullmatch(orden_id):
+        return responder(400, {"error": "orden_id invalido"})
+    params = event.get("queryStringParameters") or {}
+    try:
+        limite = int(params.get("limit", "20"))
+        if not 1 <= limite <= 50:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return responder(400, {"error": "limit debe estar entre 1 y 50"})
+    pk = "TENANT#" + actor["tenant_id"]
+    existe = TABLE.get_item(
+        Key={"PK": pk, "SK": "ORDEN#" + orden_id},
+        ConsistentRead=True,
+    ).get("Item")
+    if not existe or existe.get("tenant_id") != actor["tenant_id"]:
+        return responder(404, {"error": "Orden no encontrada"})
+    prefijo = f"HISTORIAL#{orden_id}#"
+    consulta = {
+        "KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(prefijo),
+        "ConsistentRead": True, "Limit": limite,
+    }
+    if params.get("cursor"):
+        try:
+            raw = params["cursor"]
+            if not isinstance(raw, str) or not 1 <= len(raw) <= 256:
+                raise ValueError()
+            sk = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("ascii")
+            if not sk.startswith(prefijo) or not UUID_RE.fullmatch(sk[len(prefijo):]):
+                raise ValueError()
+            consulta["ExclusiveStartKey"] = {"PK": pk, "SK": sk}
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            return responder(400, {"error": "Cursor invalido"})
+    registros = TABLE.query(**consulta)
+    ultimo = registros.get("LastEvaluatedKey")
+    next_cursor = None
+    if ultimo:
+        next_cursor = base64.urlsafe_b64encode(
+            ultimo["SK"].encode("ascii")
+        ).decode("ascii").rstrip("=")
+    campos = ("event_id", "event_type", "visita_id", "parte_id", "resultado",
+              "ocurrido_en", "procesado_en", "obsoleto", "estado_anterior")
+    return responder(200, {
+        "orden_id": orden_id,
+        "historial": [
+            {k: item.get(k) for k in campos if k in item}
+            for item in registros.get("Items", [])
+        ],
+        "next_cursor": next_cursor,
+    })

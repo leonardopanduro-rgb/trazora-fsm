@@ -5,10 +5,12 @@ provider:
   runtime: python3.12
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
+  timeout: 15
   iam:
     role: ${env:LAB_ROLE_ARN}
   environment:
     TECNICOS_TABLE: trazora-tecnicos-${sls:stage}
+    AGENDA_API_BASE: ${env:MS4_AGENDA_API_BASE}
 
 functions:
   crear:
@@ -39,6 +41,15 @@ functions:
       - http:
           path: tecnicos/{tecnico_id}
           method: get
+          cors: true
+          authorizer: *ms0Auth
+
+  cambiarEstado:
+    handler: handler.cambiar_estado
+    events:
+      - http:
+          path: tecnicos/{tecnico_id}/estado
+          method: patch
           cors: true
           authorizer: *ms0Auth
 

@@ -12,6 +12,8 @@ provider:
     AGENDA_TABLE: trazora-agenda-${sls:stage}
     ORDENES_API_BASE: ${env:MS3_ORDENES_API_BASE}
     TECNICOS_API_BASE: ${env:MS2_TECNICOS_API_BASE}
+    SQS_AGENDA_ARN: ${env:TRAZORA_SQS_AGENDA_ARN}
+    EVENTOS_TOPIC_ARN: ${env:TRAZORA_EVENTOS_TOPIC_ARN}
 
 functions:
   programar:
@@ -44,6 +46,51 @@ functions:
           method: get
           cors: true
           authorizer: *ms0Auth
+
+  iniciar:
+    handler: handler.iniciar
+    events:
+      - http:
+          path: visitas/{visita_id}/iniciar
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
+  reprogramar:
+    handler: handler.reprogramar
+    events:
+      - http:
+          path: visitas/{visita_id}/reprogramar
+          method: patch
+          cors: true
+          authorizer: *ms0Auth
+
+  cancelar:
+    handler: handler.cancelar
+    events:
+      - http:
+          path: visitas/{visita_id}/cancelar
+          method: post
+          cors: true
+          authorizer: *ms0Auth
+
+  reservasFuturas:
+    handler: handler.reservas_futuras
+    events:
+      - http:
+          path: tecnicos/{tecnico_id}/reservas-futuras
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
+  consumirParte:
+    handler: consumidor.lambda_handler
+    timeout: 30
+    events:
+      - sqs:
+          arn: ${env:TRAZORA_SQS_AGENDA_ARN}
+          batchSize: 1
+          enabled: false
 
 resources:
   Resources:

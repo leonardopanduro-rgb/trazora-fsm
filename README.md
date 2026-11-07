@@ -1,48 +1,52 @@
-# Trazora FSM — Grupo 5
+# Trazora FSM — Grupo 5 (CS2032 Cloud Computing 2026-2)
 
-Proyecto final CS2032 Cloud Computing (2026-2).
+SaaS multitenant de gestión de servicios técnicos de aire acondicionado para **CLIMALIMA**, **FRIOSUR** y **TECNINORTE**. Backend en AWS Lambda + API Gateway, DynamoDB por microservicio, S3 para evidencias, SNS/SQS para eventos. Desarrollo y despliegue con Serverless Framework desde AWS Academy.
 
-SaaS multitenant de gestión de servicios técnicos de aire acondicionado desplegado en AWS.
+## Estado del repositorio
 
-Tenants de demostración: CLIMALIMA, FRIOSUR y TECNINORTE.
+**Hay código funcional preparado para seis microservicios**, pero la presencia de código no demuestra por sí sola el despliegue ni la ejecución de todos sus flujos:
 
-Microservicios planeados:
-- MS0 usuarios: login, sesiones y autorizador.
-- MS1 clientes: clientes y ubicaciones.
-- MS2 tecnicos: técnicos y jornadas.
-- MS3 ordenes: órdenes de trabajo.
-- MS4 agenda: visitas y reservas.
-- MS5 partes: partes de trabajo y evidencias.
+| Servicio | Funciones de código disponibles |
+| --- | --- |
+| MS0 Usuarios | Login, tokens, autorización y bootstrap |
+| MS1 Clientes | Clientes y validaciones por tenant |
+| MS2 Técnicos | Técnicos, jornadas y activación/desactivación |
+| MS3 Órdenes | Crear, buscar, listar; consumidor de eventos e historial |
+| MS4 Agenda | Programar, iniciar, reprogramar y cancelar; consumidor de ParteFinalizado |
+| MS5 Partes | Borradores, evidencias S3 y finalizar parte + OUTBOX + publicación SNS |
 
-Tecnologías: Python, Lambda, API Gateway, DynamoDB, React, Amplify, S3, SNS, SQS y Serverless Framework.
+La integración propuesta de eventos **no usa DynamoDB Streams**. MS5 publica `ParteFinalizado` desde Lambda tras guardar el OUTBOX. SNS envía el mensaje a SQS Agenda y SQS Órdenes. Agenda finaliza la visita y publica `VisitaCompletada`, mientras Órdenes registra historial y actualiza el estado al recibir esa confirmación. Hay INBOX y recuperación manual de OUTBOX mediante boto3.
 
-ESTADO: Solo estructura inicial y endpoint de prueba HTTP /health. La autenticación y servicios de negocio aún no están implementados.
+**Estado de AWS (último diagnóstico aportado el 06/11/2026, región us-east-1):** stacks MS0–MS5 existentes y función MS5 finalizar activa. El tema SNS, las dos colas SQS y las dos DLQ existen, pero no pertenecen a un stack `trazora-eventos-dev`. Los mappings SQS a Lambdas manuales estaban **Disabled**. La nueva integración EDA fue preparada en GitHub y **no se ha confirmado su despliegue ni sus pruebas de extremo a extremo en AWS**.
 
-## Preparación en EC2
+### Para continuar
 
-    cd /home/ubuntu
-    git clone https://github.com/leonardopanduro-rgb/trazora-fsm.git
-    cd trazora-fsm
-    git status
+- [Guía de eventos y despliegue seguro en AWS Academy](docs/EDA_SNS_SQS_LABROLE.md)
+- [Notas de integración del backend](docs/INTEGRACION_BACKEND_2026-11-04.md)
+- [Finalización de MS5](docs/MS5_FINALIZAR.md)
+- [Generador y verificador de datos](scripts/seed/README.md)
 
-Si el repositorio es privado, usar autenticación GitHub autorizada sin incorporar tokens a la URL.
+**No desplegar `infra/eventos/serverless.yml` sobre los recursos existentes con los mismos nombres.** No activar ambos pares de consumidores SQS. Los mappings nuevos se declaran inicialmente deshabilitados.
 
-## Primer despliegue (solo prueba de salud)
+## Pruebas locales (sin AWS)
 
-Actualizar las credenciales temporales del laboratorio en ~/.aws/credentials y comprobar:
+En una terminal de desarrollo con Python 3.10+ y boto3:
 
-    aws sts get-caller-identity --region us-east-1
+```bash
+cd ~/trazora-fsm
+python3 -m venv ~/.venvs/trazora-tools
+~/.venvs/trazora-tools/bin/python -m pip install boto3
+PYTHONDONTWRITEBYTECODE=1 ~/.venvs/trazora-tools/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+```
 
-Obtener de IAM el ARN real del rol Lambda autorizado, luego:
+La suite de pruebas contiene mocks y no necesita credenciales AWS. Hay además una configuración de GitHub Actions para tests, cuyo resultado debe verificarse en cada commit.
 
-    export AWS_PROFILE=default
-    export AWS_REGION=us-east-1
-    export LAB_ROLE_ARN='ARN_REAL_DEL_ROL'
-    cd /home/ubuntu/trazora-fsm/backend/usuarios
-    serverless login
-    serverless deploy --stage dev --region us-east-1
-    serverless info --stage dev --region us-east-1
+## AWS Academy / LabRole
 
-La API /health es pública solamente para la verificación inicial. No despliega login ni autorización multitenant.
+Comprobar la identidad con `aws sts get-caller-identity --region us-east-1` tras renovar credenciales del laboratorio. Obtener el ARN de `LabRole` y configurarlo mediante variable de entorno para Serverless, según las instrucciones en `docs/EDA_SNS_SQS_LABROLE.md`. Nunca guardar credenciales, contraseñas ni tokens en GitHub.
 
-Nunca subir credenciales, contraseñas ni tokens a GitHub. EC2 es una estación de desarrollo, no el alojamiento permanente de las APIs.
+La máquina EC2 se utiliza para desarrollo, pruebas y carga directa con boto3; las APIs funcionan en Lambda. **No hacer carga masiva por API Gateway.**
+
+## Por completar antes de la entrega
+
+Pruebas y despliegue EDA en dev, permisos y reintentos SNS/SQS, autorización del rol TECNICO para sus visitas, eventos adicionales de Agenda, cierre coordinado de órdenes, frontend React en Amplify, verificación de los volúmenes multitenant y documentación de evidencias. No presentar esos puntos como finalizados sin verificarlos.

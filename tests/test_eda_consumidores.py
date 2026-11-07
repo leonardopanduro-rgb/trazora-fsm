@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+from decimal import Decimal
 import os
 from pathlib import Path
 import sys
@@ -171,6 +172,23 @@ class AgendaTest(unittest.TestCase):
         self.sns.publish.assert_called_once()
         self.assertEqual(self.sns.publish.call_args.kwargs["TopicArn"], TOPICO)
         self.table.update_item.assert_called_once()
+
+    def test_publicador_agenda_convierte_decimal(self):
+        original = self.table.get_item.side_effect
+
+        def con_version_decimal(*, Key, ConsistentRead):
+            encontrado = original(Key=Key, ConsistentRead=ConsistentRead)
+            if Key["SK"].startswith("OUTBOX#"):
+                encontrado["Item"]["payload"]["aggregate_version"] = Decimal("3")
+            return encontrado
+
+        self.table.get_item.side_effect = con_version_decimal
+        llave = {"PK": "TENANT#CLIMALIMA",
+                 "SK": "OUTBOX#" + self.mod.id_completada(self.e)}
+        self.mod.publicar_outbox(llave)
+        payload = json.loads(self.sns.publish.call_args.kwargs["Message"])
+        self.assertIs(type(payload["aggregate_version"]), int)
+        self.assertEqual(payload["aggregate_version"], 3)
 
     def test_evento_ajeno_no_modifica_visita(self):
         self.visita["tenant_id"] = "FRIOSUR"

@@ -47,6 +47,16 @@ functions:
           cors: true
           authorizer: *ms0Auth
 
+  historial:
+    handler: handler.historial
+    timeout: 10
+    events:
+      - http:
+          path: ordenes/{orden_id}/historial
+          method: get
+          cors: true
+          authorizer: *ms0Auth
+
   consumirEvento:
     handler: consumidor.lambda_handler
     timeout: 30

@@ -461,7 +461,8 @@ def publicar_outbox(outbox):
     try:
         SNS.publish(
             TopicArn=TOPIC_ARN,
-            Message=json.dumps(outbox["payload"], ensure_ascii=False, separators=(",", ":")),
+            Message=json.dumps(outbox["payload"], ensure_ascii=False, separators=(",", ":"),
+                               default=decimal_default),
         )
     except Exception as exc:
         print(json.dumps({

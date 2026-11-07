@@ -6,6 +6,7 @@ No usa API Gateway, no elimina registros y mantiene el mismo event_id.
 """
 import argparse
 import json
+import uuid
 from datetime import datetime, timezone
 
 import boto3
@@ -23,6 +24,7 @@ def argumentos():
     parser.add_argument("--stage", default="dev", choices=("dev", "test", "prod"))
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--max", type=int, default=10, dest="limite")
+    parser.add_argument("--event-id", default=None, help="Seleccionar un único evento OUTBOX")
     parser.add_argument("--apply", action="store_true", help="Publicar en SNS")
     parser.add_argument("--confirm", default="", help="Con --apply escribir PUBLICAR")
     return parser.parse_args()
@@ -53,6 +55,18 @@ def pendientes(tabla, tenant, limite):
             return
 
 
+def buscar_evento(tabla, tenant, event_id):
+    """Busca un único OUTBOX por su clave primaria; nunca otros eventos."""
+    try:
+        canonical = str(uuid.UUID(event_id))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise SystemExit("--event-id debe ser un UUID válido") from exc
+    if canonical != event_id:
+        raise SystemExit("--event-id debe ser un UUID canónico en minúsculas")
+    llave = {"PK": f"TENANT#{tenant}", "SK": f"OUTBOX#{canonical}"}
+    return tabla.get_item(Key=llave, ConsistentRead=True).get("Item")
+
+
 def validar(item, tenant, tipo):
     payload = item.get("payload")
     if (item.get("entity_type") != "OUTBOX"
@@ -71,8 +85,8 @@ def main():
     args = argumentos()
     if not 1 <= args.limite <= 100:
         raise SystemExit("--max debe estar entre 1 y 100")
-    if args.apply and args.confirm != "PUBLICAR":
-        raise SystemExit("Para escribir: --apply --confirm PUBLICAR")
+    if args.apply and (args.confirm != "PUBLICAR" or not args.event_id):
+        raise SystemExit("Para publicar un evento exacto: --event-id UUID --apply --confirm PUBLICAR")
     session = boto3.Session(region_name=args.region)
     sts = session.client("sts")
     cuenta = sts.get_caller_identity()["Account"]
@@ -82,7 +96,18 @@ def main():
     sns = session.client("sns")
     tipo = TIPOS[args.servicio]
     total = 0
-    for item in pendientes(tabla, args.tenant, args.limite):
+    if args.event_id:
+        encontrado = buscar_evento(tabla, args.tenant, args.event_id)
+        if not encontrado:
+            raise SystemExit("No se encontró el OUTBOX exacto para ese tenant e ID")
+        if encontrado.get("estado") == "PUBLICADO":
+            print(json.dumps({"event_id": args.event_id, "estado": "PUBLICADO",
+                              "accion": "NINGUNA", "motivo": "Ya publicado"}))
+            return
+        elegidos = (encontrado,)
+    else:
+        elegidos = pendientes(tabla, args.tenant, args.limite)
+    for item in elegidos:
         payload = validar(item, args.tenant, tipo)
         evento_id = item["event_id"]
         total += 1

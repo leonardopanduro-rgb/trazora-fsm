@@ -146,14 +146,14 @@ def procesar(evento):
         {"Update": {
             "TableName": TABLE_NAME,
             "Key": av(llave_visita),
-            "UpdateExpression": "SET #estado=:fin, finalizada_en=:ahora ADD #version :uno",
+            "UpdateExpression": "SET #estado=:finalizada, finalizada_en=:ahora ADD #version :uno",
             "ConditionExpression": (
                 "#estado=:atencion AND tenant_id=:tenant AND visita_id=:visita "
                 "AND orden_id=:orden AND tecnico_id=:tecnico AND inicio=:inicio AND fin=:fin"
             ),
             "ExpressionAttributeNames": {"#estado": "estado", "#version": "version"},
             "ExpressionAttributeValues": av({
-                ":fin": "FINALIZADA", ":atencion": "EN_ATENCION",
+                ":finalizada": "FINALIZADA", ":atencion": "EN_ATENCION",
                 ":tenant": tenant, ":visita": d["visita_id"],
                 ":orden": d["orden_id"], ":tecnico": visita["tecnico_id"],
                 ":inicio": visita["inicio"], ":fin": visita["fin"],

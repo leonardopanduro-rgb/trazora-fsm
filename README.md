@@ -17,7 +17,7 @@ SaaS multitenant de gestión de servicios técnicos de aire acondicionado para *
 
 La integración propuesta de eventos **no usa DynamoDB Streams**. MS5 publica `ParteFinalizado` desde Lambda tras guardar el OUTBOX. SNS envía el mensaje a SQS Agenda y SQS Órdenes. Agenda finaliza la visita y publica `VisitaCompletada`, mientras Órdenes registra historial y actualiza el estado al recibir esa confirmación. Hay INBOX y recuperación manual de OUTBOX mediante boto3.
 
-**Estado de AWS (último diagnóstico aportado el 06/11/2026, región us-east-1):** stacks MS0–MS5 existentes y función MS5 finalizar activa. El tema SNS, las dos colas SQS y las dos DLQ existen, pero no pertenecen a un stack `trazora-eventos-dev`. Los mappings SQS a Lambdas manuales estaban **Disabled**. La nueva integración EDA fue preparada en GitHub y **no se ha confirmado su despliegue ni sus pruebas de extremo a extremo en AWS**.
+**Estado actualizado (7/11/2026):** se comprobó mediante capturas del laboratorio **un caso end-to-end exitoso**: MS5 `ParteFinalizado` → SNS → SQS → MS4 visita `FINALIZADA` → MS3 orden `PENDIENTE_DE_CIERRE`. Los dos consumidores manuales están ahora habilitados; las colas SNS/SQS existen fuera del stack `trazora-eventos-dev`. No supone cierre completo, automatización final de los consumidores ni pruebas de todos los tenants. Ver [evidencia y pendientes](docs/ESTADO_INTEGRACION_2026-11-07.md).
 
 ### Para continuar
 

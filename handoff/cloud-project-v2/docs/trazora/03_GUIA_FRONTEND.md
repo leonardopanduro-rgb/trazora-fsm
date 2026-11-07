@@ -1,3 +1,5 @@
+> **ACTUALIZACIÓN (07/11/2026):** ya se integró y probó el camino `ParteFinalizado` → Agenda `FINALIZADA` → Órdenes `PENDIENTE_DE_CIERRE`. MS4 incluye iniciar, reprogramar y cancelar; MS5 finalizar y publicación SNS. La guía inferior es el plan del starter anterior; no bloquear esas rutas por creer que siguen sin implementarse. Ver [estado actualizado](https://github.com/leonardopanduro-rgb/trazora-fsm/blob/main/docs/ESTADO_INTEGRACION_2026-11-07.md).
+
 # Guía de implementación del frontend (React + Vite)
 
 ## Objetivo y límites

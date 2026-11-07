@@ -22,6 +22,7 @@ La integración propuesta de eventos **no usa DynamoDB Streams**. MS5 publica `P
 ### Para continuar
 
 - [Guía de eventos y despliegue seguro en AWS Academy](docs/EDA_SNS_SQS_LABROLE.md)
+- [Entrega del frontend React premium y traspaso seguro al repositorio del equipo](docs/TRASPASO_FRONTEND_2026-11-07.md)
 - [Notas de integración del backend](docs/INTEGRACION_BACKEND_2026-11-04.md)
 - [Finalización de MS5](docs/MS5_FINALIZAR.md)
 - [Generador y verificador de datos](scripts/seed/README.md)

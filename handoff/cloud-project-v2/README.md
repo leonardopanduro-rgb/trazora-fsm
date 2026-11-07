@@ -1,3 +1,5 @@
+> **Corte 07/11/2026:** se registró una prueba end-to-end real de eventos. Ver [estado de integración](https://github.com/leonardopanduro-rgb/trazora-fsm/blob/main/docs/ESTADO_INTEGRACION_2026-11-07.md). El directorio `handoff/.../frontend` sigue siendo un *starter histórico*, no la versión visual premium en ZIP entregada por ChatGPT. Para llevar el nuevo frontend al repositorio del equipo, extraer su ZIP en `frontend/` de una rama nueva, ejecutar `npm install && npm run build` y abrir PR. No sobrescribir el trabajo del equipo sin comparar cambios.
+
 # Traspaso de Trazora FSM al repositorio del equipo
 
 **Destino:** https://github.com/rvcuba-utec/cloud-project-v2  

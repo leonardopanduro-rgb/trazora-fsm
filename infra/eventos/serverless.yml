@@ -8,7 +8,10 @@ provider:
   iam:
     role: ${env:LAB_ROLE_ARN}
 
-# Stack compartido: infraestructura SNS/SQS, sin Lambdas ni consumidores aún.
+# REFERENCIA PARA ENTORNO NUEVO: en AWS Academy dev estos recursos
+# ya EXISTEN fuera de un stack trazora-eventos-dev. NO desplegar esta
+# plantilla en esa cuenta: los nombres SNS/SQS ya estan ocupados.
+# Los consumidores nuevos se declaran en backend/agenda y backend/ordenes.
 resources:
   Resources:
     EventosFSMTopic:
@@ -98,10 +101,6 @@ resources:
         FilterPolicy:
           event_type:
             - ParteFinalizado
-            - VisitaProgramada
-            - VisitaReprogramada
-            - VisitaIniciada
-            - VisitaCancelada
             - VisitaCompletada
 
   Outputs:

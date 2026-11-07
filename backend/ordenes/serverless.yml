@@ -10,6 +10,7 @@ provider:
   environment:
     ORDENES_TABLE: trazora-ordenes-${sls:stage}
     CLIENTES_API_BASE: ${env:MS1_CLIENTES_API_BASE}
+    SQS_ORDENES_ARN: ${env:TRAZORA_SQS_ORDENES_ARN}
 
 functions:
   crear:
@@ -45,6 +46,15 @@ functions:
           method: get
           cors: true
           authorizer: *ms0Auth
+
+  consumirEvento:
+    handler: consumidor.lambda_handler
+    timeout: 30
+    events:
+      - sqs:
+          arn: ${env:TRAZORA_SQS_ORDENES_ARN}
+          batchSize: 1
+          enabled: false
 
 resources:
   Resources:

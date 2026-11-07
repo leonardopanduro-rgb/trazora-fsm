@@ -1,3 +1,5 @@
+> **Actualización EDA 06/11/2026 (rama Academy):** esta guía describe el incremento anterior, previo a la publicación SNS. En la rama actual, MS5 intenta publicar directamente a SNS después de guardar el OUTBOX; puede devolver `PUBLICADO` o `PENDIENTE_PUBLICACION`. No se usan DynamoDB Streams. El flujo y los pasos seguros están en [EDA_SNS_SQS_LABROLE.md](EDA_SNS_SQS_LABROLE.md). La implementación de consumidores está preparada, **no desplegada ni probada en AWS**.
+
 # MS5 — Finalizar parte y registrar evento OUTBOX (incremento 2)
 
 **Rama:** \`feature/ms5-finalizar-parte-outbox-2026-11-04\`  

@@ -125,6 +125,26 @@ class FinalizarParteTest(unittest.TestCase):
         self.assertEqual(event["data"]["M"]["orden_id"]["S"], ORDEN_ID)
         self.assertEqual(event["data"]["M"]["visita_id"]["S"], VISITA_ID)
 
+    def test_finalizar_publica_sns_despues_del_commit(self):
+        topico = "arn:aws:sns:us-east-1:000000000000:trazora-fsm-eventos-dev"
+        with mock.patch.object(self.mod, "TOPIC_ARN", topico), mock.patch.object(self.mod, "SNS") as sns:
+            code, payload = self.call(self.event())
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["evento"]["estado"], "PUBLICADO")
+        self.db.transact_write_items.assert_called_once()
+        sns.publish.assert_called_once()
+        self.table.update_item.assert_called_once()
+
+    def test_finalizar_con_sns_fallando_conserva_outbox(self):
+        topico = "arn:aws:sns:us-east-1:000000000000:trazora-fsm-eventos-dev"
+        with mock.patch.object(self.mod, "TOPIC_ARN", topico), mock.patch.object(self.mod, "SNS") as sns:
+            sns.publish.side_effect = RuntimeError("SNS no disponible")
+            code, payload = self.call(self.event())
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["evento"]["estado"], "PENDIENTE_PUBLICACION")
+        self.db.transact_write_items.assert_called_once()
+        self.table.update_item.assert_not_called()
+
     def test_reintento_no_crea_evento_nuevo(self):
         self.part.update({
             "estado": "FINALIZADO",

@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+from decimal import Decimal
 import sys
 import unittest
 from unittest import mock
@@ -55,6 +56,17 @@ class PublicacionMS5Test(unittest.TestCase):
         self.assertEqual(mensaje["event_type"], "ParteFinalizado")
         self.assertEqual(mensaje["event_id"], OUTBOX["event_id"])
         self.tabla.update_item.assert_called_once()
+
+    def test_publica_agregate_version_decimal_como_entero(self):
+        outbox = {
+            **OUTBOX,
+            "payload": {**OUTBOX["payload"], "aggregate_version": Decimal("3")},
+        }
+        estado = self.mod.publicar_outbox(outbox)
+        self.assertEqual(estado, "PUBLICADO")
+        mensaje = json.loads(self.sns.publish.call_args.kwargs["Message"])
+        self.assertEqual(mensaje["aggregate_version"], 3)
+        self.assertIs(type(mensaje["aggregate_version"]), int)
 
     def test_falla_sns_conserva_pendiente(self):
         self.sns.publish.side_effect = RuntimeError("Sin autorizacion o SNS no disponible")

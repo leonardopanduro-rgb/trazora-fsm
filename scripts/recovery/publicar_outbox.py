@@ -8,6 +8,7 @@ import argparse
 import json
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -67,6 +68,16 @@ def buscar_evento(tabla, tenant, event_id):
     return tabla.get_item(Key=llave, ConsistentRead=True).get("Item")
 
 
+def serializar_decimal(value):
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise TypeError("Decimal no finito")
+        if value == value.to_integral_value():
+            return int(value)
+        return str(value)
+    raise TypeError(f"No se puede serializar {type(value).__name__}")
+
+
 def validar(item, tenant, tipo):
     payload = item.get("payload")
     if (item.get("entity_type") != "OUTBOX"
@@ -122,7 +133,8 @@ def main():
         # con el MISMO event_id y los consumidores reconoceran el duplicado.
         sns.publish(
             TopicArn=tema_arn,
-            Message=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            Message=json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                               default=serializar_decimal),
         )
         try:
             tabla.update_item(

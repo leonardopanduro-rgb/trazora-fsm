@@ -9,6 +9,7 @@ import json
 import os
 import re
 import uuid
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -117,10 +118,9 @@ def procesar(evento):
             or visita.get("orden_id") != d["orden_id"]
             or visita.get("estado") != "EN_ATENCION"):
         raise ValueError("Visita no encontrada o no finalizable")
-    if type(visita.get("version")) not in (int,) and not (
-        hasattr(visita.get("version"), "__int__")
-        and int(visita["version"]) >= 1
-    ):
+    version = visita.get("version")
+    if (isinstance(version, bool) or not isinstance(version, (int, Decimal))
+            or version < 1 or int(version) != version):
         raise ValueError("Version de visita invalida")
 
     ahora = datetime.now(timezone.utc).strftime(FECHA)
@@ -149,7 +149,8 @@ def procesar(evento):
             "UpdateExpression": "SET #estado=:finalizada, finalizada_en=:ahora ADD #version :uno",
             "ConditionExpression": (
                 "#estado=:atencion AND tenant_id=:tenant AND visita_id=:visita "
-                "AND orden_id=:orden AND tecnico_id=:tecnico AND inicio=:inicio AND fin=:fin"
+                "AND orden_id=:orden AND tecnico_id=:tecnico AND inicio=:inicio AND fin=:fin "
+                "AND #version=:esperada"
             ),
             "ExpressionAttributeNames": {"#estado": "estado", "#version": "version"},
             "ExpressionAttributeValues": av({
@@ -157,7 +158,7 @@ def procesar(evento):
                 ":tenant": tenant, ":visita": d["visita_id"],
                 ":orden": d["orden_id"], ":tecnico": visita["tecnico_id"],
                 ":inicio": visita["inicio"], ":fin": visita["fin"],
-                ":ahora": ahora, ":uno": 1,
+                ":ahora": ahora, ":uno": 1, ":esperada": version,
             }),
         }}
     ]

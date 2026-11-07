@@ -1,3 +1,5 @@
+> **ACTUALIZACIÓN (07/11/2026):** este documento es un corte histórico de 03/11/2026. MS4 ya tiene rutas de iniciar/reprogramar/cancelar declaradas; MS5 incluye finalizar parte y SNS; se probó un caso real de eventos hasta Ordenes. La fuente actual de verdad es [estado de integración](https://github.com/leonardopanduro-rgb/trazora-fsm/blob/main/docs/ESTADO_INTEGRACION_2026-11-07.md) y los archivos serverless.yml. La URL de APIs puede cambiar con el Lab.
+
 # Trazora FSM — Estado real y pendientes (03/11/2026)
 
 > **Lectura obligatoria antes de desarrollar frontend.** Esta es una fotografía del código y de las pruebas realizadas en el entorno `dev`. **No confundir la propuesta/diagramas futuros de este repositorio con endpoints ya desplegados.**

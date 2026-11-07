@@ -30,6 +30,17 @@ UUID = re.compile(r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 FECHA = "%Y-%m-%dT%H:%M:%SZ"
 
 
+def serializar_decimal(value):
+    """DynamoDB entrega números como Decimal; mantener enteros JSON numéricos."""
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise TypeError("Decimal no finito")
+        if value == value.to_integral_value():
+            return int(value)
+        return str(value)
+    raise TypeError(f"No se puede serializar {type(value).__name__}")
+
+
 def av(item):
     return {k: SERIALIZER.serialize(v) for k, v in item.items()}
 
@@ -229,7 +240,8 @@ def publicar_outbox(llave):
     # Tal como en el taller SNS: publicar JSON en el topic con boto3.
     SNS.publish(
         TopicArn=TOPIC_ARN,
-        Message=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        Message=json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                           default=serializar_decimal),
     )
     try:
         TABLE.update_item(

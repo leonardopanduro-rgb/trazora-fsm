@@ -1,3 +1,5 @@
+> **Actualización validada el 07/11/2026:** se comprobó en AWS Academy un flujo end-to-end real: `ParteFinalizado` → SNS → SQS → Agenda `FINALIZADA` → Órdenes `PENDIENTE_DE_CIERRE`. Los dos consumidores **manuales** están habilitados en dev. La descripción de abajo refleja el plan previo a la prueba; ver [estado y evidencia actual](ESTADO_INTEGRACION_2026-11-07.md). El despliegue declarativo completo y las pruebas de duplicados/DLQ siguen pendientes.
+
 # EDA de Trazora en AWS Academy: SNS + SQS + Lambda, sin Streams
 
 **Rama de código:** feature/eda-sns-sqs-academy-2026-11-06.

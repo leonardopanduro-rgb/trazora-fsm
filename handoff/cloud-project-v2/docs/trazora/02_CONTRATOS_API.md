@@ -1,3 +1,5 @@
+> **ACTUALIZACIÓN (07/11/2026):** las rutas de MS4 `POST /visitas/{id}/iniciar`, `PATCH /visitas/{id}/reprogramar`, `POST /visitas/{id}/cancelar` y de MS5 `POST /partes/{id}/finalizar` ya están declaradas en el backend, y la finalización fue probada por eventos. La API de MS3 también declara `GET /ordenes/{id}/historial`. Este documento es la versión histórica del contrato (03/11). Para desplegar frontend usar los handlers/serverless actuales y verificar URL y stage de la cuenta.
+
 # Contratos HTTP de Trazora FSM — APIs reales de desarrollo
 
 **Fecha de corte:** 03/11/2026. **Fuente de verdad:** código backend en https://github.com/leonardopanduro-rgb/trazora-fsm. Las URL se tomaron de despliegues y pruebas reportados; si el laboratorio recrea API Gateway, hay que actualizarlas.

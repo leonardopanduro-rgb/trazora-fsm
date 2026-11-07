@@ -15,6 +15,7 @@ provider:
     PARTES_TABLE: trazora-partes-${sls:stage}
     EVIDENCIAS_BUCKET: ${self:custom.evidenciasBucket}
     AGENDA_API_BASE: ${env:MS4_AGENDA_API_BASE}
+    EVENTOS_TOPIC_ARN: ${env:TRAZORA_EVENTOS_TOPIC_ARN}
 
 functions:
   crearBorrador:
